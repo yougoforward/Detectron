@@ -69,6 +69,7 @@ def initialize_gpu_from_weights_file(model, weights_file, gpu_id=0):
         src_blobs = src_blobs['blobs']
     # Initialize weights on GPU gpu_id only
     unscoped_param_names = OrderedDict()  # Print these out in model order
+    # for blob in model.params+model._computed_params:
     for blob in model.params:
         unscoped_param_names[c2_utils.UnscopeName(str(blob))] = True
     with c2_utils.NamedCudaScope(gpu_id):
@@ -87,6 +88,12 @@ def initialize_gpu_from_weights_file(model, weights_file, gpu_id=0):
             if src_name not in src_blobs:
                 logger.info('{:s} not found'.format(src_name))
                 continue
+            # for finetune on own dataset modify do not initialize classnums dependent parameters use pretrained model
+            # when training
+            if src_name in ['bbox_pred_b', 'bbox_pred_w', 'cls_score_b', 'cls_score_w']:
+                continue
+            # if src_name in ['fc6_w','fc6_b','fc7_b','fc7_w']:
+            #     continue
             dst_name = core.ScopedName(unscoped_param_name)
             has_momentum = src_name + '_momentum' in src_blobs
             has_momentum_str = ' [+ momentum]' if has_momentum else ''

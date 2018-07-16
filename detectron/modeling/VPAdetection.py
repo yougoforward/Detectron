@@ -23,16 +23,13 @@ from __future__ import unicode_literals
 import collections
 import numpy as np
 
-from detectron.core.config import cfg
-from detectron.modeling.generate_anchors import generate_anchors
-from detectron.utils.c2 import const_fill
-from detectron.utils.c2 import gauss_fill
-from detectron.utils.net import get_group_gn
-import detectron.modeling.ResNet as ResNet
-import modeling.ResNetAll as ResNetAll
-import modeling.MobileNet as MobileNet
-import detectron.utils.blob as blob_utils
-import detectron.utils.boxes as box_utils
+from core.config import cfg
+from modeling.generate_anchors import generate_anchors
+from utils.c2 import const_fill
+from utils.c2 import gauss_fill
+import modeling.ResNet as ResNet
+import utils.blob as blob_utils
+import utils.boxes as box_utils
 
 # Lowest and highest pyramid levels in the backbone network. For FPN, we assume
 # that all networks have 5 spatial reductions, each by a factor of 2. Level 1
@@ -41,62 +38,14 @@ LOWEST_BACKBONE_LVL = 2   # E.g., "conv2"-like level
 HIGHEST_BACKBONE_LVL = 5  # E.g., "conv5"-like level
 
 
-
-def add_fpn_MobileNet_conv5_body(model):
-    return add_fpn_onto_conv_body(
-        model, MobileNet.add_MobileNet_conv5_body, fpn_level_info_MobileNet_conv5
-    )
-
-def add_fpn_ResNet18_conv5_body(model):
-    return add_fpn_onto_conv_body(
-        model, ResNetAll.add_ResNet18_conv5_body, fpn_level_info_ResNet18_conv5
-    )
 # ---------------------------------------------------------------------------- #
 # FPN with ResNet
 # ---------------------------------------------------------------------------- #
 
 def add_fpn_ResNet50_conv5_body(model):
     return add_fpn_onto_conv_body(
-        model, ResNet.add_ResNet50_conv5_body, fpn_level_info_ResNet50_conv5
-    )
-
-
-def add_fpn_ResNet50_conv5_P2only_body(model):
-    return add_fpn_onto_conv_body(
-        model,
-        ResNet.add_ResNet50_conv5_body,
-        fpn_level_info_ResNet50_conv5,
-        P2only=True
-    )
-
-
-def add_fpn_ResNet101_conv5_body(model):
-    return add_fpn_onto_conv_body(
-        model, ResNet.add_ResNet101_conv5_body, fpn_level_info_ResNet101_conv5
-    )
-
-
-def add_fpn_ResNet101_conv5_P2only_body(model):
-    return add_fpn_onto_conv_body(
-        model,
-        ResNet.add_ResNet101_conv5_body,
-        fpn_level_info_ResNet101_conv5,
-        P2only=True
-    )
-
-
-def add_fpn_ResNet152_conv5_body(model):
-    return add_fpn_onto_conv_body(
-        model, ResNet.add_ResNet152_conv5_body, fpn_level_info_ResNet152_conv5
-    )
-
-
-def add_fpn_ResNet152_conv5_P2only_body(model):
-    return add_fpn_onto_conv_body(
-        model,
-        ResNet.add_ResNet152_conv5_body,
-        fpn_level_info_ResNet152_conv5,
-        P2only=True
+        model, ResNet.add_ResNet50_conv5_body, fpn_level_info_ResNet50_conv5,
+       fpn_level_info_ResNet50_conv5_p1
     )
 
 
@@ -105,7 +54,7 @@ def add_fpn_ResNet152_conv5_P2only_body(model):
 # ---------------------------------------------------------------------------- #
 
 def add_fpn_onto_conv_body(
-    model, conv_body_func, fpn_level_info_func, P2only=False
+    model, conv_body_func, fpn_level_info_func, fpn_level_info_func_p1, P2only=False
 ):
     """Add the specified conv body to the model and then add FPN levels to it.
     """
@@ -115,7 +64,7 @@ def add_fpn_onto_conv_body(
 
     conv_body_func(model)
     blobs_fpn, dim_fpn, spatial_scales_fpn = add_fpn(
-        model, fpn_level_info_func()
+        model, fpn_level_info_func(), fpn_level_info_func_p1()
     )
 
     if P2only:
@@ -126,7 +75,7 @@ def add_fpn_onto_conv_body(
         return blobs_fpn, dim_fpn, spatial_scales_fpn
 
 
-def add_fpn(model, fpn_level_info):
+def add_fpn(model, fpn_level_info, fpn_level_info_p1):
     """Add FPN connections based on the model described in the FPN paper."""
     # FPN levels are built starting from the highest/coarest level of the
     # backbone (usually "conv5"). First we build down, recursively constructing
@@ -151,34 +100,18 @@ def add_fpn(model, fpn_level_info):
     fpn_dim_lateral = fpn_level_info.dims
     xavier_fill = ('XavierFill', {})
 
-    # For the coarsest backbone level: 1x1 conv only seeds recursion
-    if cfg.FPN.USE_GN:
-        # use GroupNorm
-        c = model.ConvGN(
-            lateral_input_blobs[0],
-            output_blobs[0],  # note: this is a prefix
-            dim_in=fpn_dim_lateral[0],
-            dim_out=fpn_dim,
-            group_gn=get_group_gn(fpn_dim),
-            kernel=1,
-            pad=0,
-            stride=1,
-            weight_init=xavier_fill,
-            bias_init=const_fill(0.0)
-        )
-        output_blobs[0] = c  # rename it
-    else:
-        model.Conv(
-            lateral_input_blobs[0],
-            output_blobs[0],
-            dim_in=fpn_dim_lateral[0],
-            dim_out=fpn_dim,
-            kernel=1,
-            pad=0,
-            stride=1,
-            weight_init=xavier_fill,
-            bias_init=const_fill(0.0)
-        )
+    # For the coarest backbone level: 1x1 conv only seeds recursion
+    model.Conv(
+        lateral_input_blobs[0],
+        output_blobs[0],
+        dim_in=fpn_dim_lateral[0],
+        dim_out=fpn_dim,
+        kernel=1,
+        pad=0,
+        stride=1,
+        weight_init=xavier_fill,
+        bias_init=const_fill(0.0)
+    )
 
     #
     # Step 1: recursively build down starting from the coarsest backbone level
@@ -197,36 +130,91 @@ def add_fpn(model, fpn_level_info):
 
     # Post-hoc scale-specific 3x3 convs
     blobs_fpn = []
+    # spatial_scales = []
+    for i in range(num_backbone_stages):
+        fpn_blob = model.Conv(
+            output_blobs[i],
+            'fpn_{}'.format(fpn_level_info.blobs[i]),
+            dim_in=fpn_dim,
+            dim_out=fpn_dim,
+            kernel=3,
+            pad=1,
+            stride=1,
+            weight_init=xavier_fill,
+            bias_init=const_fill(0.0)
+        )
+        blobs_fpn += [fpn_blob]
+        # spatial_scales += [fpn_level_info.spatial_scales[i]]
+
+    # FPN+FPN
+    lateral_input_blobs_p1 = fpn_level_info_p1.blobs[:num_backbone_stages]
+    output_blobs_p1 = [
+        'fpn_inner_{}'.format(s)
+        for s in fpn_level_info_p1.blobs[:num_backbone_stages]
+    ]
+    fpn_dim_lateral_p1 = fpn_level_info_p1.dims
+    xavier_fill = ('XavierFill', {})
+
+    model.Conv(
+        lateral_input_blobs_p1[0],
+        output_blobs_p1[0],
+        dim_in=fpn_dim_lateral_p1[0],
+        dim_out=fpn_dim,
+        kernel=1,
+        pad=0,
+        stride=1,
+        weight_init=xavier_fill,
+        bias_init=const_fill(0.0)
+    )
+    #
+    # Step 1: recursively build down starting from the coarsest backbone level
+    #
+
+    # For other levels add top-down and lateral connections
+    for i in range(num_backbone_stages - 1):
+        add_topdown_lateral_module(
+            model,
+            output_blobs_p1[i],  # top-down blob
+            lateral_input_blobs_p1[i + 1],  # lateral blob
+            output_blobs_p1[i + 1],  # next output blob
+            fpn_dim,  # output dimension
+            fpn_dim_lateral_p1[i + 1]  # lateral input dimension
+        )
+
+    # Post-hoc scale-specific 3x3 convs
+    blobs_fpn_p1 = []
     spatial_scales = []
     for i in range(num_backbone_stages):
-        if cfg.FPN.USE_GN:
-            # use GroupNorm
-            fpn_blob = model.ConvGN(
-                output_blobs[i],
-                'fpn_{}'.format(fpn_level_info.blobs[i]),
-                dim_in=fpn_dim,
-                dim_out=fpn_dim,
-                group_gn=get_group_gn(fpn_dim),
-                kernel=3,
-                pad=1,
-                stride=1,
-                weight_init=xavier_fill,
-                bias_init=const_fill(0.0)
-            )
-        else:
-            fpn_blob = model.Conv(
-                output_blobs[i],
-                'fpn_{}'.format(fpn_level_info.blobs[i]),
-                dim_in=fpn_dim,
-                dim_out=fpn_dim,
-                kernel=3,
-                pad=1,
-                stride=1,
-                weight_init=xavier_fill,
-                bias_init=const_fill(0.0)
-            )
-        blobs_fpn += [fpn_blob]
-        spatial_scales += [fpn_level_info.spatial_scales[i]]
+        fpn_blob_p1 = model.Conv(
+            output_blobs_p1[i],
+            'fpn_{}'.format(fpn_level_info_p1.blobs[i]),
+            dim_in=fpn_dim,
+            dim_out=fpn_dim,
+            kernel=3,
+            pad=1,
+            stride=1,
+            weight_init=xavier_fill,
+            bias_init=const_fill(0.0)
+        )
+        blobs_fpn_p1 += [fpn_blob_p1]
+        spatial_scales += [fpn_level_info_p1.spatial_scales[i]]
+
+
+    # for i in range(num_backbone_stages):
+    #     fpn_blob_p1 = model.ConvShared(
+    #         output_blobs_p1[i],
+    #         'fpn_{}'.format(fpn_level_info_p1.blobs[i]),
+    #         dim_in=fpn_dim,
+    #         dim_out=fpn_dim,
+    #         kernel=3,
+    #         pad=1,
+    #         stride=1,
+    #         weight='fpn_'+str(fpn_level_info.blobs[i])+'_w',
+    #         bias='fpn_'+str(fpn_level_info.blobs[i])+'_b'
+    #     )
+    #     blobs_fpn_p1 += [fpn_blob_p1]
+    #     spatial_scales += [fpn_level_info_p1.spatial_scales[i]]
+
 
     #
     # Step 2: build up starting from the coarsest backbone level
@@ -235,37 +223,37 @@ def add_fpn(model, fpn_level_info):
     # Check if we need the P6 feature map
     if not cfg.FPN.EXTRA_CONV_LEVELS and max_level == HIGHEST_BACKBONE_LVL + 1:
         # Original FPN P6 level implementation from our CVPR'17 FPN paper
-        P6_blob_in = blobs_fpn[0]
+        P6_blob_in = blobs_fpn_p1[0]
         P6_name = P6_blob_in + '_subsampled_2x'
         # Use max pooling to simulate stride 2 subsampling
         P6_blob = model.MaxPool(P6_blob_in, P6_name, kernel=1, pad=0, stride=2)
-        blobs_fpn.insert(0, P6_blob)
+        blobs_fpn_p1.insert(0, P6_blob)
         spatial_scales.insert(0, spatial_scales[0] * 0.5)
 
     # Coarser FPN levels introduced for RetinaNet
-    if cfg.FPN.EXTRA_CONV_LEVELS and max_level > HIGHEST_BACKBONE_LVL:
-        fpn_blob = fpn_level_info.blobs[0]
-        dim_in = fpn_level_info.dims[0]
-        for i in range(HIGHEST_BACKBONE_LVL + 1, max_level + 1):
-            fpn_blob_in = fpn_blob
-            if i > HIGHEST_BACKBONE_LVL + 1:
-                fpn_blob_in = model.Relu(fpn_blob, fpn_blob + '_relu')
-            fpn_blob = model.Conv(
-                fpn_blob_in,
-                'fpn_' + str(i),
-                dim_in=dim_in,
-                dim_out=fpn_dim,
-                kernel=3,
-                pad=1,
-                stride=2,
-                weight_init=xavier_fill,
-                bias_init=const_fill(0.0)
-            )
-            dim_in = fpn_dim
-            blobs_fpn.insert(0, fpn_blob)
-            spatial_scales.insert(0, spatial_scales[0] * 0.5)
+    # if cfg.FPN.EXTRA_CONV_LEVELS and max_level > HIGHEST_BACKBONE_LVL:
+    #     fpn_blob = fpn_level_info.blobs[0]
+    #     dim_in = fpn_level_info.dims[0]
+    #     for i in range(HIGHEST_BACKBONE_LVL + 1, max_level + 1):
+    #         fpn_blob_in = fpn_blob
+    #         if i > HIGHEST_BACKBONE_LVL + 1:
+    #             fpn_blob_in = model.Relu(fpn_blob, fpn_blob + '_relu')
+    #         fpn_blob = model.Conv(
+    #             fpn_blob_in,
+    #             'fpn_' + str(i),
+    #             dim_in=dim_in,
+    #             dim_out=fpn_dim,
+    #             kernel=3,
+    #             pad=1,
+    #             stride=2,
+    #             weight_init=xavier_fill,
+    #             bias_init=const_fill(0.0)
+    #         )
+    #         dim_in = fpn_dim
+    #         blobs_fpn.insert(0, fpn_blob)
+    #         spatial_scales.insert(0, spatial_scales[0] * 0.5)
 
-    return blobs_fpn, fpn_dim, spatial_scales
+    return blobs_fpn_p1, fpn_dim, spatial_scales
 
 
 def add_topdown_lateral_module(
@@ -273,37 +261,20 @@ def add_topdown_lateral_module(
 ):
     """Add a top-down lateral module."""
     # Lateral 1x1 conv
-    if cfg.FPN.USE_GN:
-        # use GroupNorm
-        lat = model.ConvGN(
-            fpn_lateral,
-            fpn_bottom + '_lateral',
-            dim_in=dim_lateral,
-            dim_out=dim_top,
-            group_gn=get_group_gn(dim_top),
-            kernel=1,
-            pad=0,
-            stride=1,
-            weight_init=(
-                const_fill(0.0) if cfg.FPN.ZERO_INIT_LATERAL
-                else ('XavierFill', {})),
-            bias_init=const_fill(0.0)
-        )
-    else:
-        lat = model.Conv(
-            fpn_lateral,
-            fpn_bottom + '_lateral',
-            dim_in=dim_lateral,
-            dim_out=dim_top,
-            kernel=1,
-            pad=0,
-            stride=1,
-            weight_init=(
-                const_fill(0.0)
-                if cfg.FPN.ZERO_INIT_LATERAL else ('XavierFill', {})
-            ),
-            bias_init=const_fill(0.0)
-        )
+    lat = model.Conv(
+        fpn_lateral,
+        fpn_bottom + '_lateral',
+        dim_in=dim_lateral,
+        dim_out=dim_top,
+        kernel=1,
+        pad=0,
+        stride=1,
+        weight_init=(
+            const_fill(0.0) if cfg.FPN.ZERO_INIT_LATERAL
+            else ('XavierFill', {})
+        ),
+        bias_init=const_fill(0.0)
+    )
     # Top-down 2x upsampling
     td = model.net.UpsampleNearest(fpn_top, fpn_bottom + '_topdown', scale=2)
     # Sum lateral and top-down
@@ -473,7 +444,7 @@ def add_fpn_rpn_losses(model):
             'loss_rpn_cls_fpn' + slvl,
             normalize=0,
             scale=(
-                model.GetLossScale() / cfg.TRAIN.RPN_BATCH_SIZE_PER_IM /
+                1. / cfg.NUM_GPUS / cfg.TRAIN.RPN_BATCH_SIZE_PER_IM /
                 cfg.TRAIN.IMS_PER_BATCH
             )
         )
@@ -488,7 +459,7 @@ def add_fpn_rpn_losses(model):
             ],
             'loss_rpn_bbox_fpn' + slvl,
             beta=1. / 9.,
-            scale=model.GetLossScale(),
+            scale=1. / cfg.NUM_GPUS
         )
         loss_gradients.update(
             blob_utils.
@@ -554,16 +525,12 @@ FpnLevelInfo = collections.namedtuple(
     'FpnLevelInfo',
     ['blobs', 'dims', 'spatial_scales']
 )
-def fpn_level_info_MobileNet_conv5():
+
+
+def fpn_level_info_ResNet50_conv5_p1():
     return FpnLevelInfo(
-        blobs=('conv6_sep_relu', 'conv5_5_sep_relu', 'conv4_1_sep_relu', 'conv3_1_sep_relu'),
-        dims=(1024, 512, 256, 128),
-        spatial_scales=(1. / 32., 1. / 16., 1. / 8., 1. / 4.)
-    )
-def fpn_level_info_ResNet18_conv5():
-    return FpnLevelInfo(
-        blobs=('res5_1_sum', 'res4_1_sum', 'res3_1_sum', 'res2_1_sum'),
-        dims=(512, 256, 128, 64),
+        blobs=('fpn_res5_2_sum', 'fpn_res4_5_sum', 'fpn_res3_3_sum', 'fpn_res2_2_sum'),
+        dims=(256, 256, 256, 256),
         spatial_scales=(1. / 32., 1. / 16., 1. / 8., 1. / 4.)
     )
 
@@ -573,7 +540,6 @@ def fpn_level_info_ResNet50_conv5():
         dims=(2048, 1024, 512, 256),
         spatial_scales=(1. / 32., 1. / 16., 1. / 8., 1. / 4.)
     )
-
 
 def fpn_level_info_ResNet101_conv5():
     return FpnLevelInfo(
@@ -588,4 +554,17 @@ def fpn_level_info_ResNet152_conv5():
         blobs=('res5_2_sum', 'res4_35_sum', 'res3_7_sum', 'res2_2_sum'),
         dims=(2048, 1024, 512, 256),
         spatial_scales=(1. / 32., 1. / 16., 1. / 8., 1. / 4.)
+    )
+
+
+
+# -------------------------------------------------------------------------------#
+ResLevelInfo = collections.namedtuple(
+    'ResLevelInfo',
+    ['blobs']
+)
+
+def Res_level_info_ResNet50_stg3():
+    return FpnLevelInfo(
+        blobs=('res5_2_sum', 'res4_5_sum', 'res3_3_sum', 'res2_2_sum')
     )
